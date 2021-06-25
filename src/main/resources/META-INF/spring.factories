@@ -1,0 +1,2 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+  com.dc.game.shardingspringbootstarter.config.DataSourceShardingConfig
