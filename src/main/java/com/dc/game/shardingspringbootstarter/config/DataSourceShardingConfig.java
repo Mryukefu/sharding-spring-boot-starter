@@ -6,11 +6,10 @@ import com.alibaba.druid.pool.DruidDataSource;
 import com.alibaba.druid.support.http.StatViewServlet;
 import com.dc.game.shardingspringbootstarter.algorithm.CreateFieldShardingAlgorithm;
 import com.dc.game.shardingspringbootstarter.annotation.MyMapperScan;
-import com.dc.game.shardingspringbootstarter.entry.enumkey.BindingTableGroupsEnum;
 import com.dc.game.shardingspringbootstarter.entry.enumkey.TableRuleConfigurationEnum;
 import com.google.common.collect.Lists;
-import com.sun.istack.internal.NotNull;
 import lombok.extern.slf4j.Slf4j;
+import org.antlr.v4.runtime.misc.NotNull;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.shardingsphere.api.config.masterslave.LoadBalanceStrategyConfiguration;
 import org.apache.shardingsphere.api.config.masterslave.MasterSlaveRuleConfiguration;
@@ -126,7 +125,6 @@ public class DataSourceShardingConfig {
     /**
      *
      * 获取sharding 数据源组
-     * @param dsProps
      * @return {@code javax.sql.DataSource}
      * @author ykf
      * @date 2021/4/12 10:44
@@ -154,14 +152,14 @@ public class DataSourceShardingConfig {
             log.info("[数据源加载]{}", dsProp.getDcName());
             dataSourceMap.put(dsProp.getDcName(), ds0(dsProp));
         }
-         List<TableRuleConfigurationEnum> tableRuleConfigurationEnums = Arrays.asList(TableRuleConfigurationEnum.values());
-        if (tableRuleConfigurationEnums !=null&&tableRuleConfigurationEnums.size()>0){
+         /*List<TableRuleConfigurationEnum> tableRuleConfigurationEnums = Arrays.asList(TableRuleConfigurationEnum.values());
+         if (tableRuleConfigurationEnums !=null&&tableRuleConfigurationEnums.size()>0){
             tableRuleConfigurationEnums.forEach(
                     dbNameEnums->{
                         shardingRuleConfig.getTableRuleConfigs().add(ruleConfig(dbNameEnums));
                     }
             );
-        }
+        }*/
         //  配置主从
         shardingRuleConfig.setMasterSlaveRuleConfigs(getMasterSlaveRuleConfigs(ds));
         // 获取数据源对象
@@ -174,9 +172,7 @@ public class DataSourceShardingConfig {
 
         //  获取主从配置
     private Collection<MasterSlaveRuleConfiguration>  getMasterSlaveRuleConfigs(List<DsProps.DsProp> dsProps) {
-
         if (dsProps !=null&&dsProps.size()>0){
-
             return dsProps.stream().map(dsProp -> {
                 // 从库
                 List<DsProps.DsProp> slaveDs = dsProp.getSlaveDs();
@@ -195,7 +191,7 @@ public class DataSourceShardingConfig {
     /**
      *
      * 设置表规则
-     * @param tableRuleConfigurationEnum
+     * @param rEnum
      * @return {@code io.shardingsphere.api.config.rule.TableRuleConfiguration} 配置分表规则
      * @author ykf
      * @date 2021/4/12 10:54

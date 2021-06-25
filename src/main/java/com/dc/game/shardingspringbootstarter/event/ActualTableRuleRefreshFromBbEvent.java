@@ -25,12 +25,10 @@ import tk.mybatis.mapper.util.StringUtil;
 import javax.sql.DataSource;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
-import java.sql.Statement;
+import java.sql.*;
 import java.time.LocalDate;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -48,18 +46,68 @@ public class ActualTableRuleRefreshFromBbEvent {
 
     private ShardingDataSource shardingDataSource;
 
-
     @Autowired
     private DsProps dsProps;
 
 
-    public Boolean isMasterSlave() {
+    /**
+     *  获取主从的关系
+     * @return
+     */
+    public Map<String, List<DsProps.DsProp>> getMaterRelateSlave() {
+        List<DsProps.DsProp> ds = dsProps.getDs();
+        Map<String, List<DsProps.DsProp>> materRelateSlave =
+                ds.stream().filter(dProp->dProp.getSlaveDs()!=null).
+                        collect(Collectors.toMap(DsProps.DsProp::getDcName, DsProps.DsProp::getSlaveDs));
+        return materRelateSlave;
 
-        return false;
+    }
+
+
+    /**
+     * 获取所有的主库
+     * @return
+     */
+    public List<String> getMaterNames() {
+       return new ArrayList<>(dsProps.getDs().stream().map(DsProps.DsProp::getDcName).collect(Collectors.toSet()));
+
+    }
+
+
+    /**
+     * 获取 逻辑库跟 实际数据库的关系
+     * @return
+     */
+    public Map<String,String> getDbName() {
+        Map<String, DataSource> dataSourceMap = shardingDataSource.getDataSourceMap();
+        Map<String, String> getDbName = dataSourceMap.keySet().stream()
+                .collect(Collectors
+                        .toMap(Function.identity(), t1 -> {
+                            try {
+                                return dataSourceMap.get(t1).getConnection().getCatalog();
+                            } catch (SQLException throwables) {
+                                throwables.printStackTrace();
+                            }
+                            return null;
+                        }));
+        return getDbName;
 
     }
 
     /**
+     *  获取主从关系(逻辑分组库跟逻辑库的关系)
+     * @return
+     */
+    public Map<String,String> getMaterSalveNames() {
+        List<DsProps.DsProp> list = dsProps.getDs();
+        return
+                list.stream()
+                        .collect(Collectors.toMap(DsProps.DsProp::getDcName,DsProps.DsProp::getMsName));
+
+    }
+
+
+    /**m
      * 表节点刷新调度
      *
      * @param
@@ -73,21 +121,22 @@ public class ActualTableRuleRefreshFromBbEvent {
         this.shardingDataSource = (ShardingDataSource) dataSource;
     }
 
-    public void actualDataNodesRefresh() throws NoSuchFieldException, IllegalAccessException, InstantiationException, ClassNotFoundException {
+    public void actualDataNodesRefresh() throws Exception {
         ShardingRule shardingRule = shardingDataSource.getRuntimeContext().getRule();
         ShardingConnection connection = shardingDataSource.getConnection();
         // 查询数据库配置的分表节点
-        List<DbDataNodes> dbDataNodes = queryCreateTable(connection);
+
+        List<DbDataNodes> dbDataNodes = queryCreateTable(connection,getMaterNames().get(0));
 
         //  校验数据库配置
         checkDataBaseConfig(dbDataNodes);
-        boolean masterSalve = isMasterSalve(shardingRule);
-
 
         // 封装实际表(包含数据库节点 loginTableName+后缀)
         List<DbDataNodes> calculateRequiredTables = calculateRequiredTableNames(dbDataNodes);
 
-        Collection<TableRule> newTableRules = structureNewTableRule(calculateRequiredTables);
+        // 创建表规则
+        boolean masterSalve = isMasterSalve(shardingRule);
+        Collection<TableRule> newTableRules = structureNewTableRule(calculateRequiredTables,masterSalve);
 
         // 刷新分表规则
         Field actualDataNodesField = ShardingRule.class.getDeclaredField("tableRules");
@@ -103,7 +152,6 @@ public class ActualTableRuleRefreshFromBbEvent {
             }).collect(Collectors.joining(","));
             log.info("[刷新表规则]：{}", flushTable);
         }
-
 
         // 刷新分组规则(连表sql)
         Map<String, List<TableRule>> map = newTableRules.stream().collect(Collectors.groupingBy(TableRule::getLogicTable));
@@ -124,135 +172,144 @@ public class ActualTableRuleRefreshFromBbEvent {
             bindingTableRulesNodesField.setAccessible(true);
             bindingTableRulesNodesField.set(shardingRule, bindingTableRules);
         }
-
-        Set<String> existedTableNames = getExistedTableNames(dbDataNodes, connection);
-        calculateRequiredTables = calculateRequiredTables.stream()
-                .filter(t1 -> !existedTableNames.contains(t1.getAuthenticTableName()))
-                .collect(Collectors.toList());
-
-        if (calculateRequiredTables != null && calculateRequiredTables.size() > 0) {
-            createTable(calculateRequiredTables);
-        }
     }
 
     private boolean isMasterSalve(ShardingRule shardingRule) {
         Collection<MasterSlaveRule> masterSlaveRules = shardingRule.getMasterSlaveRules();
-        return masterSlaveRules!=null&&masterSlaveRules.size()>0;
+        return masterSlaveRules!=null
+                &&masterSlaveRules.size()>0
+                &&masterSlaveRules.iterator().hasNext()
+                &&StringUtils.hasLength(masterSlaveRules.iterator().next().getMasterDataSourceName());
     }
 
 
     /**
      * desc 创建实际上的节点，样式 dbName.tableName
-     *
-     * @param type                    作用范围 1 用来生成表 2 用来刷新表
      * @param calculateRequiredTables 数据库配置的分表信息
      * @return {@code java.util.Collection<io.shardingsphere.core.rule.TableRule>}
      * @author ykf
      * @date 2021/4/16 17:17
      */
-    private Collection<TableRule> structureNewTableRule(List<DbDataNodes> calculateRequiredTables)
+    private Collection<TableRule> structureNewTableRule(List<DbDataNodes> calculateRequiredTables,Boolean masterSalve)
             throws NoSuchFieldException, IllegalAccessException, ClassNotFoundException, InstantiationException {
         List<TableRule> tableRules = new ArrayList<>();
+
+        // 分库
+        List<String> materNames = getMaterNames();
 
         //  根据逻辑表进行分组
         Map<String, List<DbDataNodes>> map = calculateRequiredTables.stream()
                 .collect(Collectors.groupingBy(DbDataNodes::getLogicTableName));
+        for (String materName : materNames) {
+            for (String logicTableName : map.keySet()) {
+                List<DbDataNodes> dbDataNodes = map.get(logicTableName);
 
-        for (String logicTableName : map.keySet()) {
-            List<DbDataNodes> dbDataNodes = map.get(logicTableName);
+                //  数据库规则
+                TableRule tableRule = new TableRule("", logicTableName);
 
-            //  数据库规则
-            TableRule tableRule = new TableRule("", logicTableName);
+                //  设置新节点
+                List<DataNode> newDataNodes = new ArrayList<>();
 
-            //  设置新节点
-            List<DataNode> newDataNodes = new ArrayList<>();
+                //  设计数据库索引
+                Map<DataNode, Integer> dataNodeIndexMap = Maps.newHashMap();
 
-            //  设计数据库索引
-            Map<DataNode, Integer> dataNodeIndexMap = Maps.newHashMap();
+                //  封装数据
+                packageTableRuleInfo(masterSalve, materName, dbDataNodes, newDataNodes, dataNodeIndexMap);
 
-            //  逻辑库对应的表结构
-            Map<String, List<String>> dataTableMap = new LinkedHashMap<>();
+                //  逻辑库对应的表结构
+                Map<String, List<String>> dataTableMap =newDataNodes
+                        .stream()
+                        .collect(Collectors.groupingBy(DataNode::getDataSourceName,Collectors.mapping(DataNode::getTableName,Collectors.toList())));
+
+                //  获取修改权限
+                Field modifiersField = Field.class.getDeclaredField("modifiers");
+                modifiersField.setAccessible(true);
+
+                // 反射刷新actualDataNodes
+                Field actualDatasourceNamesField = TableRule.class.getDeclaredField("actualDatasourceNames");
+                actualDatasourceNamesField.setAccessible(true);
+                modifiersField.setInt(actualDatasourceNamesField, actualDatasourceNamesField.getModifiers() & Modifier.FINAL);
+                actualDatasourceNamesField.set(tableRule, newDataNodes.stream().map(DataNode::getDataSourceName).collect(Collectors.toSet()));
+
+                // 反射刷新actualDataNodes
+                Field actualDataNodesField = TableRule.class.getDeclaredField("actualDataNodes");
+                actualDataNodesField.setAccessible(true);
+                modifiersField.setInt(actualDataNodesField, actualDataNodesField.getModifiers() & Modifier.FINAL);
+                actualDataNodesField.set(tableRule, newDataNodes);
+
+                // 反射刷新dataNodeIndexMap
+                Field dataNodeIndexMapField = TableRule.class.getDeclaredField("dataNodeIndexMap");
+                dataNodeIndexMapField.setAccessible(true);
+                modifiersField.setInt(dataNodeIndexMapField, dataNodeIndexMapField.getModifiers() & Modifier.FINAL);
+                dataNodeIndexMapField.set(tableRule, dataNodeIndexMap);
+
+                // 反射刷新 tableShardingStrategy
+                Field tableShardingStrategyField = TableRule.class.getDeclaredField("tableShardingStrategy");
+                tableShardingStrategyField.setAccessible(true);
+                modifiersField.setInt(tableShardingStrategyField, tableShardingStrategyField.getModifiers() & Modifier.FINAL);
+
+                //  同一张逻辑表的配置其实是一样的恶
+                DbDataNodes firstDataNodes = dbDataNodes.get(0);
+                tableShardingStrategyField.set(tableRule, TableRuleConfigurationFactionBuilder
+                        .buildShardingStrategyConfiguration(firstDataNodes.getClassNameShardingStrategy(),
+                                firstDataNodes.getClassNameShardingAlgorithm(), firstDataNodes.getShardingColumns(), null));
+
+                // 反射刷新  generateKeyColumn
+                Field generateKeyColumnField = TableRule.class.getDeclaredField("generateKeyColumn");
+                generateKeyColumnField.setAccessible(true);
+                modifiersField.setInt(generateKeyColumnField, generateKeyColumnField.getModifiers() & Modifier.FINAL);
+                generateKeyColumnField.set(tableRule, firstDataNodes.getGeneratorColumnName());
 
 
-            List<String> tableName = new ArrayList<>();
+                // 反射刷新  shardingKeyGenerator
+                Field shardingKeyGeneratorField = TableRule.class.getDeclaredField("shardingKeyGenerator");
+                shardingKeyGeneratorField.setAccessible(true);
+                modifiersField.setInt(shardingKeyGeneratorField, shardingKeyGeneratorField.getModifiers() & Modifier.FINAL);
+                shardingKeyGeneratorField.set(tableRule, Class.forName(firstDataNodes.getKeyGenerator()).newInstance());
 
 
-            for (DbDataNodes dbDataNode : dbDataNodes) {
-                String masterSlaveDateSourceName = dbDataNode.getMasterSlaveDateSourceName();
-                DataNode dataNode = null;
-                // 如果配置了主从
-                if (StringUtil.isNotEmpty(masterSlaveDateSourceName) && masterSlaveDateSourceName.equals(dsProps.getDs().get(0).getMsName())) {
-                    dataNode = new DataNode(String.format("%s.%s", masterSlaveDateSourceName, dbDataNode.getAuthenticTableName()));
-                    //  没有配置主从的 直接取主库
-                } else {
-                    dataNode = new DataNode(String.format("%s.%s", dbDataNode.getMasterDataSourceName(), dbDataNode.getAuthenticTableName()));
-                }
-                dataNodeIndexMap.put(dataNode, dbDataNodes.indexOf(dbDataNode));
-
-                tableName.add(dataNode.getTableName());
-                newDataNodes.add(dataNode);
+                // 反射刷新  datasourceToTablesMap
+                Field datasourceToTablesMapField = TableRule.class.getDeclaredField("datasourceToTablesMap");
+                datasourceToTablesMapField.setAccessible(true);
+                modifiersField.setInt(datasourceToTablesMapField, datasourceToTablesMapField.getModifiers() & Modifier.FINAL);
+                datasourceToTablesMapField.set(tableRule, dataTableMap);
+                tableRules.add(tableRule);
             }
 
-            DbDataNodes dbDataNodes1 = dbDataNodes.get(0);
-            dataTableMap.put(dbDataNodes1.getMasterSlaveDateSourceName(), tableName);
-            //  获取修改权限
-            Field modifiersField = Field.class.getDeclaredField("modifiers");
-            modifiersField.setAccessible(true);
-
-            // 反射刷新actualDataNodes
-            Field actualDatasourceNamesField = TableRule.class.getDeclaredField("actualDatasourceNames");
-            actualDatasourceNamesField.setAccessible(true);
-            modifiersField.setInt(actualDatasourceNamesField, actualDatasourceNamesField.getModifiers() & Modifier.FINAL);
-            actualDatasourceNamesField.set(tableRule, dbDataNodes.stream().map(DbDataNodes::getMasterDataSourceName).collect(Collectors.toSet()));
-
-            // 反射刷新actualDataNodes
-            Field actualDataNodesField = TableRule.class.getDeclaredField("actualDataNodes");
-            actualDataNodesField.setAccessible(true);
-            modifiersField.setInt(actualDataNodesField, actualDataNodesField.getModifiers() & Modifier.FINAL);
-            actualDataNodesField.set(tableRule, newDataNodes);
-
-            // 反射刷新dataNodeIndexMap
-            Field dataNodeIndexMapField = TableRule.class.getDeclaredField("dataNodeIndexMap");
-            dataNodeIndexMapField.setAccessible(true);
-            modifiersField.setInt(dataNodeIndexMapField, dataNodeIndexMapField.getModifiers() & Modifier.FINAL);
-            dataNodeIndexMapField.set(tableRule, dataNodeIndexMap);
-
-            // 反射刷新 tableShardingStrategy
-            Field tableShardingStrategyField = TableRule.class.getDeclaredField("tableShardingStrategy");
-            tableShardingStrategyField.setAccessible(true);
-            modifiersField.setInt(tableShardingStrategyField, tableShardingStrategyField.getModifiers() & Modifier.FINAL);
-            tableShardingStrategyField.set(tableRule, TableRuleConfigurationFactionBuilder
-                    .buildShardingStrategyConfiguration(dbDataNodes1.getClassNameShardingStrategy(),
-                            dbDataNodes1.getClassNameShardingAlgorithm(), dbDataNodes1.getShardingColumns(), null));
-
-            // 反射刷新  generateKeyColumn
-            Field generateKeyColumnField = TableRule.class.getDeclaredField("generateKeyColumn");
-            generateKeyColumnField.setAccessible(true);
-            modifiersField.setInt(generateKeyColumnField, generateKeyColumnField.getModifiers() & Modifier.FINAL);
-            generateKeyColumnField.set(tableRule, dbDataNodes1.getGeneratorColumnName());
-
-
-            // 反射刷新  shardingKeyGenerator
-            Field shardingKeyGeneratorField = TableRule.class.getDeclaredField("shardingKeyGenerator");
-            shardingKeyGeneratorField.setAccessible(true);
-            modifiersField.setInt(shardingKeyGeneratorField, shardingKeyGeneratorField.getModifiers() & Modifier.FINAL);
-            shardingKeyGeneratorField.set(tableRule, Class.forName(dbDataNodes1.getKeyGenerator()).newInstance());
-
-
-            // 反射刷新  datasourceToTablesMap
-            Field datasourceToTablesMapField = TableRule.class.getDeclaredField("datasourceToTablesMap");
-            datasourceToTablesMapField.setAccessible(true);
-            modifiersField.setInt(datasourceToTablesMapField, datasourceToTablesMapField.getModifiers() & Modifier.FINAL);
-            datasourceToTablesMapField.set(tableRule, dataTableMap);
-            tableRules.add(tableRule);
         }
+
         return tableRules;
 
     }
 
+    private void packageTableRuleInfo(Boolean masterSalve, String materName,
+                                      List<DbDataNodes> dbDataNodes,
+                                      List<DataNode> newDataNodes,
+                                      Map<DataNode, Integer> dataNodeIndexMap) {
+        for (DbDataNodes dbDataNode : dbDataNodes) {
+            DataNode dataNode = null;
+
+            // 如果配置了主从
+            if (masterSalve) {
+                String msName = getMaterSalveNames().get(materName);
+                Assert.notNull(msName, "请配置主从数据库");
+                dataNode = new DataNode(String.format("%s.%s", msName, dbDataNode.getAuthenticTableName()));
+
+                // 没有配置主从
+            } else {
+                Assert.notNull(materName, "请配置主数据库");
+                dataNode = new DataNode(String.format("%s.%s", materName, dbDataNode.getAuthenticTableName()));
+            }
+            dataNodeIndexMap.put(dataNode, dbDataNodes.indexOf(dbDataNode));
+            newDataNodes.add(dataNode);
+
+        }
+    }
+
+
+
     /**
      * 项目启动的时候创建分表信息，且刷新节点
-     *
      * @return {@code void}
      * @author ykf
      * @date 2021/4/16 17:18
@@ -261,24 +318,33 @@ public class ActualTableRuleRefreshFromBbEvent {
 
         // 查询需要的表
         ShardingConnection connection = shardingDataSource.getConnection();
-        List<DbDataNodes> list = queryCreateTable(connection);
 
-        //  校验数据库与配置是否一致
-       // checkDataBaseConfig(list);
+        //  数据库查询表节点(主要是主库) 默认是在第一个主库里面查询表规则
+        List<DbDataNodes> list = queryCreateTable(connection,getMaterNames().get(0));
 
+        // 封装实际表(包含数据库节点 loginTableName+分表后缀)
         List<DbDataNodes> calculateRequiredTables = calculateRequiredTableNames(list);
 
-        //  查询已经存在的表结构
-        Set<String> existedTableNames = getExistedTableNames(list, connection);
-        calculateRequiredTables = calculateRequiredTables.stream()
-                .filter(t1 -> !existedTableNames.contains(t1.getAuthenticTableName()))
-                .collect(Collectors.toList());
+        // 赛选出需要增加的表
+        Map<String, String> dbNames = getDbName();
+        Set<String> existedTableNames = getExistedTableNames(dbNames,list
+                .stream().map(DbDataNodes::getLogicTableName).collect(Collectors.toSet()), connection);
 
-        // 创建表
-        createTable(calculateRequiredTables);
+        for (String logicDataSource : dbNames.keySet()) {
+            String realDataSource = dbNames.get(logicDataSource);
+            //  查询已经存在的表结构
+            calculateRequiredTables = calculateRequiredTables.stream().map(dataNodes -> {
+                dataNodes.setAuthenticTableName(realDataSource + DB_TABLE + dataNodes.getAuthenticTableName());
+                return dataNodes;
+            }).filter(t1 -> !existedTableNames.contains(t1.getAuthenticTableName()))
+                    .collect(Collectors.toList());
+
+            // 创建表
+            createTable(calculateRequiredTables,logicDataSource);
+        }
 
         //  刷新表节点
-        actualDataNodesRefresh();
+           actualDataNodesRefresh();
     }
 
 
@@ -292,7 +358,7 @@ public class ActualTableRuleRefreshFromBbEvent {
      */
     private void checkDataBaseConfig(List<DbDataNodes> list) {
 
-        Assert.notNull(dsProps, "请配置数据源属性");
+        /*Assert.notNull(dsProps, "请配置数据源属性");
         List<DsProps.DsProp> ds = dsProps.getDs();
 
         //  主从配置
@@ -321,7 +387,7 @@ public class ActualTableRuleRefreshFromBbEvent {
                       return   Arrays.stream(dataNode.split(","));
                     }).collect(Collectors.toSet());
             Assert.isTrue(salve.containsAll(configSalve) && configSalve.containsAll(salve), "请检查分表从库名称配置与数据库对应");
-        }
+        }*/
 
 
 
@@ -336,10 +402,10 @@ public class ActualTableRuleRefreshFromBbEvent {
      * @date 2021/4/16 16:17
      */
     @Transactional(rollbackFor = Exception.class)
-    public void createTable(List<DbDataNodes> tableNames) {
+    public void createTable(List<DbDataNodes> tableNames,String logicDataSource) {
         if (tableNames != null && tableNames.size() > 0) {
             try (ShardingConnection connection = shardingDataSource.getConnection(); Statement statement = connection
-                    .getConnection("new_dc_sdk").createStatement()) {
+                    .getConnection(logicDataSource).createStatement()) {
                 for (DbDataNodes tableName : tableNames) {
                     statement.executeUpdate(tableName.getCreateTableTemplate());
                 }
@@ -356,29 +422,32 @@ public class ActualTableRuleRefreshFromBbEvent {
     /**
      * 查询已存在的表（这个已经存在的表是数据库生成的表） 这里需要查询主库为准
      *
-     * @param list       数据库列表，
+     * @param dbName 数据库列表，
      * @param connection
      * @return {@code java.util.List<java.lang.String>}
      * @author ykf
      * @date 2021/4/16 17:19
      */
-    private Set<String> getExistedTableNames(List<DbDataNodes> list, Connection connection) {
+    private Set<String> getExistedTableNames(Map<String, String> dbName, Set<String> logicTableNames, Connection connection) {
         Set<String> result = new HashSet<>();
-        try {
-            ShardingConnection shardingConnection = (ShardingConnection) connection;
-            Connection masterConnection = shardingConnection.getConnection("new_dc_sdk_master");
-            Assert.notNull(masterConnection, "数据源不存在");
-            DatabaseMetaData metaData = masterConnection.getMetaData();
-            for (DbDataNodes dbDataNodes : list) {
-                ResultSet tables = metaData.getTables(dbDataNodes.getMasterDataSourceName(), null,
-                        dbDataNodes.getLogicTableName() + "%", new String[]{"TABLE"});
-                while (tables.next()) {
-                    String tableName = tables.getString("TABLE_NAME");
-                    result.add("new_dc_sdk" + DB_TABLE + tableName);
+        for (String logicDataSource : dbName.keySet()) {
+            String realDataSource = dbName.get(logicDataSource);
+            try {
+                ShardingConnection shardingConnection = (ShardingConnection) connection;
+                Connection masterConnection = shardingConnection.getConnection(logicDataSource);
+                Assert.notNull(masterConnection, "数据源不存在");
+                DatabaseMetaData metaData = masterConnection.getMetaData();
+                for (String logicTableName : logicTableNames) {
+                    ResultSet tables = metaData.getTables(realDataSource, null,
+                            logicTableName + "%", new String[]{"TABLE"});
+                    while (tables.next()) {
+                        String tableName = tables.getString("TABLE_NAME");
+                        result.add(realDataSource + DB_TABLE + tableName);
+                    }
                 }
+            } catch (Exception e) {
+                log.error("[查询表失败]", e);
             }
-        } catch (Exception e) {
-            log.error("[查询表失败]", e);
         }
         return result;
     }
@@ -392,33 +461,36 @@ public class ActualTableRuleRefreshFromBbEvent {
      * @author ykf
      * @date 2021/4/16 17:21
      */
-    private List<DbDataNodes> queryCreateTable(ShardingConnection connection) {
+    private List<DbDataNodes> queryCreateTable(ShardingConnection connection,String masterName) {
         List<DbDataNodes> list = new ArrayList<>();
         //  查询需要创建的表
         try {
-            Connection masterConnection = connection.getConnection("new_dc_sdk_master");
-            Statement statement = masterConnection.createStatement();
-            ResultSet resultSet = statement.executeQuery("SELECT * FROM  db_data_nodes  where  state = 1");
-            while (resultSet.next()) {
-                DbDataNodes dbDataNodes = new DbDataNodes();
-                dbDataNodes.setMasterSlaveDateSourceName(resultSet.getString("master_slave_data_source_name"));
-                dbDataNodes.setMasterDataSourceName(resultSet.getString("master_data_source_name"));
-                dbDataNodes.setSlaveDateSourceNames(resultSet.getString("slave_data_source_name"));
+                Connection masterConnection = connection.getConnection(masterName);
+                Statement statement = masterConnection.createStatement();
+                ResultSet resultSet = statement.executeQuery("SELECT * FROM  db_data_nodes  where  state = 1");
+                while (resultSet.next()) {
+                    DbDataNodes dbDataNodes = new DbDataNodes();
+                    /*dbDataNodes.setMasterSlaveDateSourceName(resultSet.getString("master_slave_data_source_name"));
+                    dbDataNodes.setMasterDataSourceName(resultSet.getString("master_data_source_name"));
+                    dbDataNodes.setSlaveDateSourceNames(resultSet.getString("slave_data_source_name"));*/
 
-                dbDataNodes.setLogicTableName(resultSet.getString("logic_table_name"));
-                dbDataNodes.setCreateTableTemplate(resultSet.getString("create_table_template"));
-                dbDataNodes.setCreateNum(resultSet.getInt("create_num"));
-                dbDataNodes.setType(resultSet.getInt("type"));
-                dbDataNodes.setExpression(resultSet.getString("expression"));
-                dbDataNodes.setAlgorithmExpression(resultSet.getString("algorithm_expression"));
-                dbDataNodes.setClassNameShardingStrategy(resultSet.getString("class_name_sharding_strategy"));
-                dbDataNodes.setClassNameShardingAlgorithm(resultSet.getString("class_name_sharding_algorithm"));
-                dbDataNodes.setGeneratorColumnName(resultSet.getString("generator_column_name"));
-                dbDataNodes.setShardingColumns(resultSet.getString("sharding_columns"));
-                dbDataNodes.setKeyGenerator(resultSet.getString("key_generator"));
-                dbDataNodes.setState(resultSet.getInt("state"));
-                list.add(dbDataNodes);
+                    dbDataNodes.setDataSourceName(resultSet.getString("date_source_name"));
+                    dbDataNodes.setLogicTableName(resultSet.getString("logic_table_name"));
+                    dbDataNodes.setCreateTableTemplate(resultSet.getString("create_table_template"));
+                    dbDataNodes.setCreateNum(resultSet.getInt("create_num"));
+                    dbDataNodes.setType(resultSet.getInt("type"));
+                    dbDataNodes.setExpression(resultSet.getString("expression"));
+                    dbDataNodes.setAlgorithmExpression(resultSet.getString("algorithm_expression"));
+                    dbDataNodes.setClassNameShardingStrategy(resultSet.getString("class_name_sharding_strategy"));
+                    dbDataNodes.setClassNameShardingAlgorithm(resultSet.getString("class_name_sharding_algorithm"));
+                    dbDataNodes.setGeneratorColumnName(resultSet.getString("generator_column_name"));
+                    dbDataNodes.setShardingColumns(resultSet.getString("sharding_columns"));
+                    dbDataNodes.setKeyGenerator(resultSet.getString("key_generator"));
+                    dbDataNodes.setState(resultSet.getInt("state"));
+                    list.add(dbDataNodes);
+
             }
+
         } catch (Exception e) {
             e.printStackTrace();
         }

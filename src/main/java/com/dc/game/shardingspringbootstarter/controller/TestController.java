@@ -26,8 +26,8 @@ public class TestController {
 
     @GetMapping("test")
     public List<DcUser> test() {
-        List<DcUser> dcUsers = userMapper.selectAll();
-        return dcUsers;
+       return Arrays.asList(userMapper.selectByPrimaryKey(3L)) ;
+
 
     }
 

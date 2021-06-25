@@ -12,13 +12,13 @@ import lombok.Data;
 public class DbDataNodes {
 
     /** 主从数据库名称 **/
-    private String masterSlaveDateSourceName;
-
+   // private String masterSlaveDateSourceName;
     /** 从数据库名称, 逗号拼接 **/
-    private String slaveDateSourceNames;
-
+   // private String slaveDateSourceNames;
     /** 数据库名称 **/
-    private String masterDataSourceName;
+   //  private String masterDataSourceName;
+    /** 数据库名称 **/
+    private String dataSourceName;
     /** 逻辑表名称 **/
     private String logicTableName;
     /** 逻辑表名称 **/
@@ -46,7 +46,6 @@ public class DbDataNodes {
 
     /** 实际上得表 **/
     private String authenticTableName;
-
 
     /** 实际上得表 **/
     private String keyGenerator;
