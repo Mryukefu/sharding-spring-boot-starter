@@ -264,7 +264,7 @@ public class ActualTableRuleRefreshFromBbEvent {
         List<DbDataNodes> list = queryCreateTable(connection);
 
         //  校验数据库与配置是否一致
-        checkDataBaseConfig(list);
+       // checkDataBaseConfig(list);
 
         List<DbDataNodes> calculateRequiredTables = calculateRequiredTableNames(list);
 
