@@ -23,6 +23,7 @@ import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -44,6 +45,7 @@ import java.util.stream.Collectors;
 @EnableConfigurationProperties({DsProps.class})
 @MyMapperScan(basePackages = {"${mybatis.mapperScanner.basePackage}"}, sqlSessionFactoryRef = "sqlSessionFactory",
         sqlSessionTemplateRef = "sqlSessionTemplate")
+@ConditionalOnProperty(prefix = "shardingTable",value = {"enable"},havingValue = "true")
 public class DataSourceShardingConfig {
 
     /**  是否开启主从配置**/
