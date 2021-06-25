@@ -37,3 +37,5 @@ mybatis:
     call-setters-on-nulls: true
   mapperScanner:
     basePackage: com.dc.game.shardingspringbootstarter.mapper
+  mapper-locations: classpath*:mappers/*.xml
+  type-aliases-package: com.dc.game.shardingspringbootstarter.entry.po

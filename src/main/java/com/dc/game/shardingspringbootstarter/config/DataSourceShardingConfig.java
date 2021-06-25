@@ -22,6 +22,7 @@ import org.mybatis.spring.SqlSessionFactoryBean;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -30,7 +31,9 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.util.Assert;
+
 import javax.sql.DataSource;
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.function.Function;
@@ -49,6 +52,13 @@ public class DataSourceShardingConfig {
     private DsProps dsProps;
 
     public static final String DB_TABLE = ".";
+
+    @Value("${mybatis.mapper-locations}")
+    private String mapperLocations;
+
+    @Value("${mybatis.type-aliases-package}")
+    private String typeAliasesPackage;
+
 
     /**
      *
@@ -253,24 +263,31 @@ public class DataSourceShardingConfig {
         @Bean("sqlSessionFactory")
         @Primary
         public SqlSessionFactory sqlSessionFactory (@Qualifier("dataSource") DataSource dataSource) throws Exception {
-            SqlSessionFactoryBean bean = new SqlSessionFactoryBean();
-
-            bean.setDataSource(dataSource);
-            bean.setTypeAliasesPackage("com.dc.game.shardingspringbootstarter.entry.po");
-
-            bean.setMapperLocations(new PathMatchingResourcePatternResolver()
-                    .getResources("classpath*:mappers/*.xml"));
+            SqlSessionFactoryBean bean = getSqlSessionFactoryBean(dataSource);
 
             SqlSessionFactory sqlSessionFactory = bean.getObject();
+
             org.apache.ibatis.session.Configuration configuration = sqlSessionFactory.getConfiguration();
             configuration.setMapUnderscoreToCamelCase(true);
             return sqlSessionFactory;
         }
 
-        @Bean("sqlSessionTemplate")
+    public SqlSessionFactoryBean getSqlSessionFactoryBean(DataSource dataSource) throws IOException {
+        SqlSessionFactoryBean bean = new SqlSessionFactoryBean();
+
+        bean.setDataSource(dataSource);
+        bean.setTypeAliasesPackage(typeAliasesPackage);
+
+        bean.setMapperLocations(new PathMatchingResourcePatternResolver()
+                .getResources(mapperLocations));
+        return bean;
+    }
+
+    @Bean("sqlSessionTemplate")
         @Primary
         public SqlSessionTemplate sqlSessionTemplate (@Qualifier("sqlSessionFactory") SqlSessionFactory
         sqlSessionFactory){
             return new SqlSessionTemplate(sqlSessionFactory);
         }
+
 }
