@@ -7,13 +7,13 @@ spring:
     datasource:
       ds[0]:
         msName: ms_dc_sdk
-        dcName: new_dc_sdk_Master
+        dcName: new_dc_sdk_master
         type: com.alibaba.druid.pool.DruidDataSource
         url: jdbc:mysql://127.0.0.1:3306/new_dc_sdk?serverTimezone=GMT%2B8&useSSL=false&allowPublicKeyRetrieval=true
         username: root
         password: root
         slaveDs[0]:
-          dcName: new_dc_sdk_Slave
+          dcName: new_dc_sdk_slave
           type: com.alibaba.druid.pool.DruidDataSource
           url: jdbc:mysql://127.0.0.1:3306/slave_new_dc_sdk?serverTimezone=GMT%2B8&useSSL=false&allowPublicKeyRetrieval=true
           username: root

@@ -10,7 +10,7 @@ import java.util.stream.Collectors;
  */
 public enum TableRuleConfigurationEnum {
 
-    ADMIN_DB_TABLE_USER("new_dc_sdk", "dc_user","user_id",
+    ADMIN_DB_TABLE_USER("new_dc_sdk_master", "dc_user","user_id",
             "user_id","_${0..1}");
 
     // 主从数据库数据库名称yml 配置一样

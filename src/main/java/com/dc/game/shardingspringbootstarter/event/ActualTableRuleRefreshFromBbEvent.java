@@ -54,6 +54,7 @@ public class ActualTableRuleRefreshFromBbEvent {
 
 
     public Boolean isMasterSlave() {
+
         return false;
 
     }
@@ -78,10 +79,13 @@ public class ActualTableRuleRefreshFromBbEvent {
         // 查询数据库配置的分表节点
         List<DbDataNodes> dbDataNodes = queryCreateTable(connection);
 
+        //  校验数据库配置
+        checkDataBaseConfig(dbDataNodes);
+        boolean masterSalve = isMasterSalve(shardingRule);
+
 
         // 封装实际表(包含数据库节点 loginTableName+后缀)
         List<DbDataNodes> calculateRequiredTables = calculateRequiredTableNames(dbDataNodes);
-
 
         Collection<TableRule> newTableRules = structureNewTableRule(calculateRequiredTables);
 
@@ -122,7 +126,6 @@ public class ActualTableRuleRefreshFromBbEvent {
         }
 
         Set<String> existedTableNames = getExistedTableNames(dbDataNodes, connection);
-
         calculateRequiredTables = calculateRequiredTables.stream()
                 .filter(t1 -> !existedTableNames.contains(t1.getAuthenticTableName()))
                 .collect(Collectors.toList());
@@ -130,6 +133,11 @@ public class ActualTableRuleRefreshFromBbEvent {
         if (calculateRequiredTables != null && calculateRequiredTables.size() > 0) {
             createTable(calculateRequiredTables);
         }
+    }
+
+    private boolean isMasterSalve(ShardingRule shardingRule) {
+        Collection<MasterSlaveRule> masterSlaveRules = shardingRule.getMasterSlaveRules();
+        return masterSlaveRules!=null&&masterSlaveRules.size()>0;
     }
 
 
@@ -162,27 +170,30 @@ public class ActualTableRuleRefreshFromBbEvent {
             //  设计数据库索引
             Map<DataNode, Integer> dataNodeIndexMap = Maps.newHashMap();
 
-            //  设置数据库对应的表结构
+            //  逻辑库对应的表结构
             Map<String, List<String>> dataTableMap = new LinkedHashMap<>();
+
+
             List<String> tableName = new ArrayList<>();
+
+
             for (DbDataNodes dbDataNode : dbDataNodes) {
                 String masterSlaveDateSourceName = dbDataNode.getMasterSlaveDateSourceName();
                 DataNode dataNode = null;
                 // 如果配置了主从
                 if (StringUtil.isNotEmpty(masterSlaveDateSourceName) && masterSlaveDateSourceName.equals(dsProps.getDs().get(0).getMsName())) {
                     dataNode = new DataNode(String.format("%s.%s", masterSlaveDateSourceName, dbDataNode.getAuthenticTableName()));
-
                     //  没有配置主从的 直接取主库
                 } else {
-                    dataNode = new DataNode(String.format("%s.%s", dbDataNode.getMasterSlaveDateSourceName(), dbDataNode.getAuthenticTableName()));
+                    dataNode = new DataNode(String.format("%s.%s", dbDataNode.getMasterDataSourceName(), dbDataNode.getAuthenticTableName()));
                 }
                 dataNodeIndexMap.put(dataNode, dbDataNodes.indexOf(dbDataNode));
 
                 tableName.add(dataNode.getTableName());
                 newDataNodes.add(dataNode);
             }
-            DbDataNodes dbDataNodes1 = dbDataNodes.get(0);
 
+            DbDataNodes dbDataNodes1 = dbDataNodes.get(0);
             dataTableMap.put(dbDataNodes1.getMasterSlaveDateSourceName(), tableName);
             //  获取修改权限
             Field modifiersField = Field.class.getDeclaredField("modifiers");
@@ -234,7 +245,6 @@ public class ActualTableRuleRefreshFromBbEvent {
             modifiersField.setInt(datasourceToTablesMapField, datasourceToTablesMapField.getModifiers() & Modifier.FINAL);
             datasourceToTablesMapField.set(tableRule, dataTableMap);
             tableRules.add(tableRule);
-
         }
         return tableRules;
 
@@ -254,7 +264,7 @@ public class ActualTableRuleRefreshFromBbEvent {
         List<DbDataNodes> list = queryCreateTable(connection);
 
         //  校验数据库与配置是否一致
-        checkDbConfig(list);
+        checkDataBaseConfig(list);
 
         List<DbDataNodes> calculateRequiredTables = calculateRequiredTableNames(list);
 
@@ -280,34 +290,39 @@ public class ActualTableRuleRefreshFromBbEvent {
      * @author ykf
      * @date 2021/6/25 15:22
      */
-    private void checkDbConfig(List<DbDataNodes> list) {
+    private void checkDataBaseConfig(List<DbDataNodes> list) {
 
         Assert.notNull(dsProps, "请配置数据源属性");
         List<DsProps.DsProp> ds = dsProps.getDs();
 
-        //  配置文件配置的数据库
+        //  主从配置
         Set<String> configMasterSalve = ds.stream().map(DsProps.DsProp::getMsName).collect(Collectors.toSet());
         if (configMasterSalve != null && configMasterSalve.size() > 0) {
             Set<String> mastersSalve = list.stream().
                     map(DbDataNodes::getMasterSlaveDateSourceName).collect(Collectors.toSet());
-            Assert.isTrue(mastersSalve.containsAll(configMasterSalve) && configMasterSalve.contains(mastersSalve), "请检查分表主从名称配置与数据库对应");
+            Assert.isTrue(mastersSalve.containsAll(configMasterSalve) && configMasterSalve.containsAll(mastersSalve), "请检查分表主从名称配置与数据库对应");
         }
 
+        // 主库配置
         Set<String> configMaster = ds.stream().map(DsProps.DsProp::getDcName).collect(Collectors.toSet());
         if (configMaster != null && configMaster.size() > 0) {
             Set<String> masters = list.stream().
                     map(DbDataNodes::getMasterDataSourceName).collect(Collectors.toSet());
-            Assert.isTrue(masters.containsAll(configMaster) && configMasterSalve.contains(masters), "请检查分表主从名称配置与数据库对应");
+            Assert.isTrue(masters.containsAll(configMaster) && configMaster.containsAll(masters), "请检查分表主库名称配置与数据库对应");
         }
 
+       //  从库配置
         Set<String> configSalve = ds.stream().flatMap(t1 -> {
             return t1.getSlaveDs().stream().map(t2 -> t2.getDcName());
         }).collect(Collectors.toSet());
         if (configSalve != null && configSalve.size() > 0) {
-            Set<String> salve = list.stream().
-                    map(DbDataNodes::getSlaveDateSourceNames).collect(Collectors.toSet());
-            Assert.isTrue(salve.containsAll(configSalve) && configMasterSalve.contains(salve), "请检查分表主从名称配置与数据库对应");
+            Set<String> salve = list.stream().map(DbDataNodes::getSlaveDateSourceNames)
+                    .flatMap(dataNode->{
+                      return   Arrays.stream(dataNode.split(","));
+                    }).collect(Collectors.toSet());
+            Assert.isTrue(salve.containsAll(configSalve) && configSalve.containsAll(salve), "请检查分表从库名称配置与数据库对应");
         }
+
 
 
     }
@@ -351,7 +366,7 @@ public class ActualTableRuleRefreshFromBbEvent {
         Set<String> result = new HashSet<>();
         try {
             ShardingConnection shardingConnection = (ShardingConnection) connection;
-            Connection masterConnection = shardingConnection.getConnection("new_dc_sdk");
+            Connection masterConnection = shardingConnection.getConnection("new_dc_sdk_master");
             Assert.notNull(masterConnection, "数据源不存在");
             DatabaseMetaData metaData = masterConnection.getMetaData();
             for (DbDataNodes dbDataNodes : list) {
@@ -381,7 +396,7 @@ public class ActualTableRuleRefreshFromBbEvent {
         List<DbDataNodes> list = new ArrayList<>();
         //  查询需要创建的表
         try {
-            Connection masterConnection = connection.getConnection("new_dc_sdk");
+            Connection masterConnection = connection.getConnection("new_dc_sdk_master");
             Statement statement = masterConnection.createStatement();
             ResultSet resultSet = statement.executeQuery("SELECT * FROM  db_data_nodes  where  state = 1");
             while (resultSet.next()) {
