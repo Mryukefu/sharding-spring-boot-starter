@@ -8,6 +8,7 @@ import com.dc.game.shardingspringbootstarter.algorithm.CreateFieldShardingAlgori
 import com.dc.game.shardingspringbootstarter.annotation.MyMapperScan;
 import com.dc.game.shardingspringbootstarter.entry.enumkey.TableRuleConfigurationEnum;
 import com.dc.game.shardingspringbootstarter.event.ActualTableRuleRefreshFromBbEvent;
+import com.dc.game.shardingspringbootstarter.wrap.WrapKeyGenerator;
 import com.google.common.collect.Lists;
 import lombok.extern.slf4j.Slf4j;
 import org.antlr.v4.runtime.misc.NotNull;
@@ -45,7 +46,7 @@ import java.util.stream.Collectors;
 @MyMapperScan(basePackages = {"${mybatis.mapperScanner.basePackage}"}, sqlSessionFactoryRef = "sqlSessionFactory",
         sqlSessionTemplateRef = "sqlSessionTemplate")
 @ConditionalOnProperty(prefix = "shardingTable", value = {"enable"}, havingValue = "true")
-@ComponentScan(basePackageClasses = {InitializingShadingDb.class,ActualTableRuleRefreshFromBbEvent.class})
+@ComponentScan(basePackageClasses = {WrapKeyGenerator.class,InitializingShadingDb.class,ActualTableRuleRefreshFromBbEvent.class})
 public class DataSourceShardingConfig {
 
     /**
