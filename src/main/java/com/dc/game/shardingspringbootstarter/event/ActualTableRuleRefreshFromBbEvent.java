@@ -520,6 +520,7 @@ public class ActualTableRuleRefreshFromBbEvent {
                     dbDataNodes.setGeneratorColumnName(resultSet.getString("generator_column_name"));
                     dbDataNodes.setShardingColumns(resultSet.getString("sharding_columns"));
                     dbDataNodes.setKeyGenerator(resultSet.getString("key_generator"));
+                    dbDataNodes.setTableGroups(resultSet.getString("table_groups"));
                     dbDataNodes.setState(resultSet.getInt("state"));
                     list.add(dbDataNodes);
 
