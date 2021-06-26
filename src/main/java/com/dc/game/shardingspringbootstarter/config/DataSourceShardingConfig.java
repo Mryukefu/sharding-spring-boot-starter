@@ -7,6 +7,7 @@ import com.alibaba.druid.support.http.StatViewServlet;
 import com.dc.game.shardingspringbootstarter.algorithm.CreateFieldShardingAlgorithm;
 import com.dc.game.shardingspringbootstarter.annotation.MyMapperScan;
 import com.dc.game.shardingspringbootstarter.entry.enumkey.TableRuleConfigurationEnum;
+import com.dc.game.shardingspringbootstarter.event.ActualTableRuleRefreshFromBbEvent;
 import com.google.common.collect.Lists;
 import lombok.extern.slf4j.Slf4j;
 import org.antlr.v4.runtime.misc.NotNull;
@@ -26,9 +27,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.*;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.util.Assert;
@@ -45,10 +44,13 @@ import java.util.stream.Collectors;
 @EnableConfigurationProperties({DsProps.class})
 @MyMapperScan(basePackages = {"${mybatis.mapperScanner.basePackage}"}, sqlSessionFactoryRef = "sqlSessionFactory",
         sqlSessionTemplateRef = "sqlSessionTemplate")
-@ConditionalOnProperty(prefix = "shardingTable",value = {"enable"},havingValue = "true")
+@ConditionalOnProperty(prefix = "shardingTable", value = {"enable"}, havingValue = "true")
+@ComponentScan(basePackageClasses = {InitializingShadingDb.class,ActualTableRuleRefreshFromBbEvent.class})
 public class DataSourceShardingConfig {
 
-    /**  是否开启主从配置**/
+    /**
+     * 是否开启主从配置
+     **/
 
     @Autowired
     private DsProps dsProps;
@@ -63,8 +65,8 @@ public class DataSourceShardingConfig {
 
 
     /**
+     * 阿里数据源拦截器
      *
-     *   阿里数据源拦截器
      * @param
      * @return {@code com.alibaba.druid.filter.Filter}
      * @author ykf
@@ -80,11 +82,9 @@ public class DataSourceShardingConfig {
     }
 
 
-
-
     /**
-     *
      * 这个是Druid监控
+     *
      * @param
      * @return {@code org.springframework.boot.web.servlet.ServletRegistrationBean}
      * @author ykf
@@ -106,8 +106,8 @@ public class DataSourceShardingConfig {
 
 
     /**
-     *
      * 后期如果需要使用多数据源的话可以手动放入ioc 容器
+     *
      * @param dsProp
      * @return {@code javax.sql.DataSource}
      * @author ykf
@@ -115,11 +115,11 @@ public class DataSourceShardingConfig {
      */
     public DataSource ds0(@NotNull DsProps.DsProp dsProp) {
         Map<String, Object> dsMap = new HashMap<>();
-        Assert.notNull(dsProp.getType(),"没有配置数据源类型");
-        Assert.notNull(dsProp.getUrl(),"没有配置数据urL");
-        Assert.notNull(dsProp.getUsername(),"没有配置用户");
-        Assert.notNull(dsProp.getPassword(),"没有配置密码");
-        dsMap.put("type",  dsProp.getType());
+        Assert.notNull(dsProp.getType(), "没有配置数据源类型");
+        Assert.notNull(dsProp.getUrl(), "没有配置数据urL");
+        Assert.notNull(dsProp.getUsername(), "没有配置用户");
+        Assert.notNull(dsProp.getPassword(), "没有配置密码");
+        dsMap.put("type", dsProp.getType());
         dsMap.put("url", dsProp.getUrl());
         dsMap.put("username", dsProp.getUsername());
         dsMap.put("password", dsProp.getPassword());
@@ -133,10 +133,9 @@ public class DataSourceShardingConfig {
     }
 
 
-
     /**
-     *
      * 获取sharding 数据源组
+     *
      * @return {@code javax.sql.DataSource}
      * @author ykf
      * @date 2021/4/12 10:44
@@ -151,11 +150,11 @@ public class DataSourceShardingConfig {
         // 配置真实数据源
         Map<String, DataSource> dataSourceMap = new HashMap<>();
 
-      List<DsProps.DsProp> masterSlave =  ds.stream().flatMap(t1->{
+        List<DsProps.DsProp> masterSlave = ds.stream().flatMap(t1 -> {
             List<DsProps.DsProp> dcs = new ArrayList<>();
             dcs.add(t1);
             List<DsProps.DsProp> slaveDs = t1.getSlaveDs();
-            if (slaveDs!=null&&slaveDs.size()>0){
+            if (slaveDs != null && slaveDs.size() > 0) {
                 dcs.addAll(slaveDs);
             }
             return dcs.stream();
@@ -178,19 +177,19 @@ public class DataSourceShardingConfig {
         Properties p = new Properties();
         p.setProperty("sql.show", Boolean.TRUE.toString());
 
-       DataSource dataSource = ShardingDataSourceFactory.createDataSource(dataSourceMap, shardingRuleConfig,p);
-            return dataSource;
-        }
+        DataSource dataSource = ShardingDataSourceFactory.createDataSource(dataSourceMap, shardingRuleConfig, p);
+        return dataSource;
+    }
 
-        //  获取主从配置
-    private Collection<MasterSlaveRuleConfiguration>  getMasterSlaveRuleConfigs(List<DsProps.DsProp> dsProps) {
-        if (dsProps !=null&&dsProps.size()>0){
+    //  获取主从配置
+    private Collection<MasterSlaveRuleConfiguration> getMasterSlaveRuleConfigs(List<DsProps.DsProp> dsProps) {
+        if (dsProps != null && dsProps.size() > 0) {
             return dsProps.stream().map(dsProp -> {
                 // 从库
                 List<DsProps.DsProp> slaveDs = dsProp.getSlaveDs();
                 if (slaveDs != null) {
                     List<String> slaveDataSourceNames = slaveDs.stream().map(DsProps.DsProp::getDcName).collect(Collectors.toList());
-                   return new MasterSlaveRuleConfiguration(dsProp.getMsName(), dsProp.getDcName(),slaveDataSourceNames
+                    return new MasterSlaveRuleConfiguration(dsProp.getMsName(), dsProp.getDcName(), slaveDataSourceNames
                             , new LoadBalanceStrategyConfiguration("ROUND_ROBIN"));
                 }
                 return null;
@@ -201,8 +200,8 @@ public class DataSourceShardingConfig {
 
 
     /**
-     *
      * 设置表规则
+     *
      * @param rEnum
      * @return {@code io.shardingsphere.api.config.rule.TableRuleConfiguration} 配置分表规则
      * @author ykf
@@ -210,69 +209,69 @@ public class DataSourceShardingConfig {
      */
 
     private TableRuleConfiguration ruleConfig(TableRuleConfigurationEnum rEnum) {
-        Assert.notNull(rEnum.getLogicTable(),"没有配置逻辑表");
-        Assert.notNull(rEnum.getDbName(),"没有配置数据源名称");
-        Assert.notNull(rEnum.getExpression(),"没有配置表达式");
-        Assert.notNull(rEnum.getGeneratorColumnName(),"没有指明主键");
-        Assert.notNull(rEnum.getShardingColumn(),"没有配置分片键");
+        Assert.notNull(rEnum.getLogicTable(), "没有配置逻辑表");
+        Assert.notNull(rEnum.getDbName(), "没有配置数据源名称");
+        Assert.notNull(rEnum.getExpression(), "没有配置表达式");
+        Assert.notNull(rEnum.getGeneratorColumnName(), "没有指明主键");
+        Assert.notNull(rEnum.getShardingColumn(), "没有配置分片键");
         List<DsProps.DsProp> ds = dsProps.getDs();
         Map<String, DsProps.DsProp> dbnameMap = ds.stream().collect(Collectors.toMap(DsProps.DsProp::getDcName, Function.identity()));
         DsProps.DsProp dsProp = dbnameMap.get(rEnum.getDbName());
-        Assert.notNull(dsProp,"没有配置数据库");
+        Assert.notNull(dsProp, "没有配置数据库");
 
         // 判断db 是否配置主从
         List<DsProps.DsProp> slaveDs = dsProp.getSlaveDs();
         String dbName = null;
-        if (slaveDs!=null&&slaveDs.size()>0){
+        if (slaveDs != null && slaveDs.size() > 0) {
             dbName = dsProp.getMsName();
-        }else {
+        } else {
             dbName = dsProp.getDcName();
         }
-        Assert.notNull(dbName,"没有配置数据库");
+        Assert.notNull(dbName, "没有配置数据库");
 
         TableRuleConfiguration tableRuleConfig = new TableRuleConfiguration(
-                rEnum.getLogicTable(),dbName+
-                DB_TABLE+rEnum.getLogicTable()+rEnum.getExpression());
-        tableRuleConfig.setKeyGeneratorConfig(new KeyGeneratorConfiguration("SNOWFLAKE",rEnum.getGeneratorColumnName()) );
+                rEnum.getLogicTable(), dbName +
+                DB_TABLE + rEnum.getLogicTable() + rEnum.getExpression());
+        tableRuleConfig.setKeyGeneratorConfig(new KeyGeneratorConfiguration("SNOWFLAKE", rEnum.getGeneratorColumnName()));
 
         tableRuleConfig.setTableShardingStrategyConfig(new StandardShardingStrategyConfiguration
                 (rEnum.getShardingColumn(),
-                new CreateFieldShardingAlgorithm()));
+                        new CreateFieldShardingAlgorithm()));
         return tableRuleConfig;
     }
 
-        /**
-         *
-         * 需要手动配置事务管理器
-         * @param dataSource
-         * @return {@code org.springframework.jdbc.datasource.DataSourceTransactionManager}
-         * @author ykf
-         * @date 2021/4/12 10:55
-         */
-        @Bean
-        public DataSourceTransactionManager transactitonManager (@Qualifier("dataSource") DataSource dataSource){
-            return new DataSourceTransactionManager(dataSource);
-        }
+    /**
+     * 需要手动配置事务管理器
+     *
+     * @param dataSource
+     * @return {@code org.springframework.jdbc.datasource.DataSourceTransactionManager}
+     * @author ykf
+     * @date 2021/4/12 10:55
+     */
+    @Bean
+    public DataSourceTransactionManager transactitonManager(@Qualifier("dataSource") DataSource dataSource) {
+        return new DataSourceTransactionManager(dataSource);
+    }
 
-        /**
-         *
-         * mybatis 使用这个sqlSessionFactory
-         * @param dataSource
-         * @return {@code org.apache.ibatis.session.SqlSessionFactory}
-         * @author ykf
-         * @date 2021/4/12 10:55
-         */
-        @Bean("sqlSessionFactory")
-        @Primary
-        public SqlSessionFactory sqlSessionFactory (@Qualifier("dataSource") DataSource dataSource) throws Exception {
-            SqlSessionFactoryBean bean = getSqlSessionFactoryBean(dataSource);
+    /**
+     * mybatis 使用这个sqlSessionFactory
+     *
+     * @param dataSource
+     * @return {@code org.apache.ibatis.session.SqlSessionFactory}
+     * @author ykf
+     * @date 2021/4/12 10:55
+     */
+    @Bean("sqlSessionFactory")
+    @Primary
+    public SqlSessionFactory sqlSessionFactory(@Qualifier("dataSource") DataSource dataSource) throws Exception {
+        SqlSessionFactoryBean bean = getSqlSessionFactoryBean(dataSource);
 
-            SqlSessionFactory sqlSessionFactory = bean.getObject();
+        SqlSessionFactory sqlSessionFactory = bean.getObject();
 
-            org.apache.ibatis.session.Configuration configuration = sqlSessionFactory.getConfiguration();
-            configuration.setMapUnderscoreToCamelCase(true);
-            return sqlSessionFactory;
-        }
+        org.apache.ibatis.session.Configuration configuration = sqlSessionFactory.getConfiguration();
+        configuration.setMapUnderscoreToCamelCase(true);
+        return sqlSessionFactory;
+    }
 
     public SqlSessionFactoryBean getSqlSessionFactoryBean(DataSource dataSource) throws IOException {
         SqlSessionFactoryBean bean = new SqlSessionFactoryBean();
@@ -286,10 +285,11 @@ public class DataSourceShardingConfig {
     }
 
     @Bean("sqlSessionTemplate")
-        @Primary
-        public SqlSessionTemplate sqlSessionTemplate (@Qualifier("sqlSessionFactory") SqlSessionFactory
-        sqlSessionFactory){
-            return new SqlSessionTemplate(sqlSessionFactory);
-        }
+    @Primary
+    public SqlSessionTemplate sqlSessionTemplate(@Qualifier("sqlSessionFactory") SqlSessionFactory
+                                                         sqlSessionFactory) {
+        return new SqlSessionTemplate(sqlSessionFactory);
+    }
+
 
 }

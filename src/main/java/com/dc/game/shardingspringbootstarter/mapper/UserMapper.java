@@ -7,8 +7,8 @@ import tk.mybatis.mapper.common.special.InsertUseGeneratedKeysMapper;
 /**
  * @Description: 用户mapper
  *
- * @author xub
- * @date 2019/10/10 下午8:52
+ * @author ykf
+ * @date 2021/4/16 16:17
  */
 public interface UserMapper extends InsertUseGeneratedKeysMapper<DcUser>, BaseMapper<DcUser> {
 
