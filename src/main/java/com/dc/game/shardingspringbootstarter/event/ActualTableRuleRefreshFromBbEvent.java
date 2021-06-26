@@ -3,6 +3,7 @@ package com.dc.game.shardingspringbootstarter.event;
 import com.dc.game.shardingspringbootstarter.config.DsProps;
 import com.dc.game.shardingspringbootstarter.config.TableRuleConfigurationFactionBuilder;
 import com.dc.game.shardingspringbootstarter.entry.po.DbDataNodes;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.shardingsphere.core.rule.BindingTableRule;
@@ -74,6 +75,20 @@ public class ActualTableRuleRefreshFromBbEvent {
     }
 
 
+    public Set<String> getSlaveNames() {
+        List<DsProps.DsProp> ds = dsProps.getDs();
+        if (ds==null){
+            return null;
+        }
+       return ds.stream().filter(_dsProps->_dsProps.getSlaveDs()!=null).flatMap(_dsProps1->{
+           return  _dsProps1.getSlaveDs().stream().map(DsProps.DsProp::getDcName);
+                }
+        ).collect(Collectors.toSet());
+
+
+    }
+
+
     /**
      * 获取 逻辑库跟 实际数据库的关系
      * @return
@@ -121,9 +136,8 @@ public class ActualTableRuleRefreshFromBbEvent {
         this.shardingDataSource = (ShardingDataSource) dataSource;
     }
 
-    public void actualDataNodesRefresh() throws Exception {
+    public void actualDataNodesRefresh(ShardingConnection connection) throws Exception {
         ShardingRule shardingRule = shardingDataSource.getRuntimeContext().getRule();
-        ShardingConnection connection = shardingDataSource.getConnection();
         // 查询数据库配置的分表节点
 
         List<DbDataNodes> dbDataNodes = queryCreateTable(connection,getMaterNames().get(0));
@@ -314,7 +328,7 @@ public class ActualTableRuleRefreshFromBbEvent {
      * @author ykf
      * @date 2021/4/16 17:18
      */
-    public void afterPropertiesSet() throws Exception {
+    public void updateTable() throws Exception {
 
         // 查询需要的表
         ShardingConnection connection = shardingDataSource.getConnection();
@@ -325,13 +339,34 @@ public class ActualTableRuleRefreshFromBbEvent {
         // 封装实际表(包含数据库节点 loginTableName+分表后缀)
         List<DbDataNodes> calculateRequiredTables = calculateRequiredTableNames(list);
 
-        // 赛选出需要增加的表
+        // 获取 逻辑库跟 实际数据库的关系
         Map<String, String> dbNames = getDbName();
-        Set<String> existedTableNames = getExistedTableNames(dbNames,list
+        if (dbNames!=null){
+            log.info("[sharding jdbc.....配置的主库有] 分别对应的数据库真实库{}",dbNames.keySet().stream().
+                    flatMap(t1->{
+                       return Arrays.asList("逻辑库:"+t1,"真实库:"+dbNames.get(t1)).stream();
+                    })
+                    .collect(Collectors.joining(",")));
+        }
+
+        //  获取所有的从库
+        Set<String> slaveNames = getSlaveNames();
+        if (slaveNames!=null){
+            log.info("[sharding jdbc.....配置的从库有]{}",slaveNames.stream().collect(Collectors.joining(",")));
+        }
+
+        //  排除从库(建表以主库配置的分表设计为准，主从基于数据库log-bin 基础)
+        Map<String, String> logicMasterName = dbNames.entrySet().stream().filter(r -> slaveNames!=null&&!slaveNames.contains(r.getKey()))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+
+        //  剩下主库配置
+        Set<String> existedTableNames = getExistedTableNames(logicMasterName,list
                 .stream().map(DbDataNodes::getLogicTableName).collect(Collectors.toSet()), connection);
 
-        for (String logicDataSource : dbNames.keySet()) {
+        // 获取真实的数据源创建表
+        for (String logicDataSource : logicMasterName.keySet()) {
             String realDataSource = dbNames.get(logicDataSource);
+
             //  查询已经存在的表结构
             calculateRequiredTables = calculateRequiredTables.stream().map(dataNodes -> {
                 dataNodes.setAuthenticTableName(realDataSource + DB_TABLE + dataNodes.getAuthenticTableName());
@@ -342,9 +377,8 @@ public class ActualTableRuleRefreshFromBbEvent {
             // 创建表
             createTable(calculateRequiredTables,logicDataSource);
         }
-
         //  刷新表节点
-           actualDataNodesRefresh();
+           actualDataNodesRefresh(connection);
     }
 
 
@@ -409,7 +443,7 @@ public class ActualTableRuleRefreshFromBbEvent {
                 for (DbDataNodes tableName : tableNames) {
                     statement.executeUpdate(tableName.getCreateTableTemplate());
                 }
-                log.info("sharding jdbc [创建表详情]：=>新建表：总数:{},表名称{}", tableNames.size(), tableNames
+                log.info("sharding jdbc..... [创建表详情]：逻辑库名称:{}=>新建表：总数:{},表名称{}", logicDataSource,tableNames.size(), tableNames
                         .stream()
                         .map(DbDataNodes::getAuthenticTableName).collect(Collectors.joining(",")));
             } catch (Exception e) {

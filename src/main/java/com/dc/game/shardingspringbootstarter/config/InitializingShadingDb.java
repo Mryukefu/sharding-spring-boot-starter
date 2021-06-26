@@ -25,7 +25,7 @@ public class InitializingShadingDb implements InitializingBean {
     public void afterPropertiesSet() throws Exception {
         log.info("===========>项目启动开始刷新表规则");
         actualTableRuleRefreshFromBbEvent.setDataSource(dataSource);
-        actualTableRuleRefreshFromBbEvent.afterPropertiesSet();
+        actualTableRuleRefreshFromBbEvent.updateTable();
         log.info("===========>刷新表规则结束");
 
     }
